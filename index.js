@@ -1,7 +1,7 @@
 const path = require('node:path');
 const { parseArgs } = require('node:util');
-const { Auth, importBrowser } = require('./auth');
-const { login } = require('./browser-login');
+const { Auth } = require('./auth');
+const { login } = require('./api-login');
 const { readJSON, withLock } = require('./store');
 const Meural = require('./meural');
 const { sync } = require('./sync');
@@ -10,25 +10,25 @@ async function main(args = process.argv.slice(2)) {
   const { values, positionals } = parseArgs({ args, allowPositionals: true, options: {
     apply: { type: 'boolean' }, 'dry-run': { type: 'boolean' },
     'cleanup-device': { type: 'boolean' }, 'refresh': { type: 'boolean' }, status: { type: 'boolean' },
-    help: { type: 'boolean', short: 'h' }, cdp: { type: 'string', default: '9222' },
+    help: { type: 'boolean', short: 'h' }, username: { type: 'string' },
     config: { type: 'string', default: path.join(__dirname, 'meural.config.json') },
     'data-dir': { type: 'string', default: path.join(__dirname, '.meural') },
-    'feed-pages': { type: 'string' }, timeout: { type: 'string', default: '600' }
+    'feed-pages': { type: 'string' }, 'env-file': { type: 'string', default: path.join(__dirname, '.env') }
   } });
   const command = positionals[0] || 'sync';
   if (values.help) {
     console.log(`Usage: node index.js <command> [options]
-  login                Open browser sign-in, then save and verify new tokens
+  login                Sign in through NETGEAR's API (prompts for MFA if needed)
   auth --status        Show access-token expiry (refresh expiry is unknown)
-  auth --cdp 9222       Import tokens from the signed-in Meural browser tab
-  auth --refresh       Verify token refresh without Chrome
+  auth --refresh       Verify the saved refresh token
   devices              List devices, orientations, and storage
   feeds                List public feed playlists (metadata only)
   sync                 Preview changes; default is a dry run
   sync --apply         Apply changes and send playlists to devices
   sync --apply --cleanup-device  Also remove old device content
 Options: --config FILE --data-dir DIR --feed-pages N --dry-run
-Login options: --cdp PORT --timeout SECONDS (default 600)
+Login options: --username EMAIL --env-file FILE
+Password: NETGEAR_PASSWORD in .env/environment, or a hidden terminal prompt
 Weekly scheduling instructions: README.md`);
     return;
   }
@@ -40,13 +40,13 @@ Weekly scheduling instructions: README.md`);
     const authFile = path.join(directory, 'auth.json');
     const auth = new Auth(authFile);
     if (command === 'login') {
-      await login(authFile, { port: values.cdp, timeoutMs: Number(values.timeout) * 1000 });
+      await login(authFile, { username: values.username, envFile: path.resolve(values['env-file']) });
       return;
     }
     if (command === 'auth') {
       if (values.status) console.log(JSON.stringify(await auth.status(), null, 2));
-      else if (values.refresh) { await auth.token(true); console.log('NETGEAR token refresh succeeded; Chrome is not required.'); }
-      else { await importBrowser(authFile, values.cdp); console.log('Imported Meural session into the private auth file. Token values were not printed.'); }
+      else if (values.refresh) { await auth.token(true); console.log('NETGEAR token refresh succeeded.'); }
+      else throw new Error('Use auth --status, auth --refresh, or login to sign in.');
       return;
     }
     const api = new Meural(auth);

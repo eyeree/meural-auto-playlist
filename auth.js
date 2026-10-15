@@ -1,4 +1,3 @@
-const { execFileSync } = require('node:child_process');
 const { readJSON, writeJSON } = require('./store');
 
 // Public application identifier used by the website, not an account secret.
@@ -6,38 +5,6 @@ const CLIENT_ID = '3ui6nklcaqoij8inrkm06gfk4s';
 function expiresAt(token) {
   try { return JSON.parse(Buffer.from(token.split('.')[1], 'base64url')).exp * 1000 || 0; }
   catch { return 0; }
-}
-
-function validatePort(port) {
-  if (!/^\d+$/.test(String(port)) || Number(port) < 1 || Number(port) > 65535) throw new Error('CDP port must be between 1 and 65535.');
-}
-
-const SESSION_EXPRESSION = `(() => {
-    if (location.origin !== 'https://my.meural.netgear.com') return {ready:false};
-    const cookies = Object.fromEntries(document.cookie.split(';').map(s => {const i=s.indexOf('=');return [s.slice(0,i).trim(),decodeURIComponent(s.slice(i+1))]}));
-    if (!cookies.refreshtoken || !cookies.token) return {ready:false};
-    return {ready:true,accessToken:cookies.token,refreshToken:cookies.refreshtoken,clientId:'${CLIENT_ID}'};
-  })()`;
-
-// Browser output can contain credentials. Capture it privately and replace all
-// CLI failures with a fixed message rather than forwarding stdout/stderr.
-function browserJSON(args) {
-  let result;
-  try {
-    const output = execFileSync('agent-browser', args,
-      { encoding: 'utf8', maxBuffer: 1024 * 1024, timeout: 15000, stdio: ['ignore', 'pipe', 'pipe'] });
-    result = JSON.parse(output);
-  } catch { throw new Error('Browser import failed. Check agent-browser, CDP connectivity, and the selected Meural tab.'); }
-  if (!result.success) throw new Error('The browser command failed. Check agent-browser and browser connectivity.');
-  return result.data;
-}
-
-async function importBrowser(file, port = '9222') {
-  validatePort(port);
-  const tokens = browserJSON(['--cdp', String(port), '--json', 'eval', SESSION_EXPRESSION]).result;
-  if (!tokens?.ready) throw new Error('No signed-in Meural session found. Run: node index.js login');
-  await writeJSON(file, { accessToken: tokens.accessToken, refreshToken: tokens.refreshToken,
-    clientId: tokens.clientId, expiresAt: expiresAt(tokens.accessToken), importedAt: new Date().toISOString() });
 }
 
 async function refreshSession(saved, fetchImpl = fetch) {
@@ -85,4 +52,4 @@ class Auth {
     return saved.accessToken;
   }
 }
-module.exports = { Auth, importBrowser, expiresAt, refreshSession, browserJSON, SESSION_EXPRESSION, validatePort, CLIENT_ID };
+module.exports = { Auth, expiresAt, refreshSession, CLIENT_ID };
