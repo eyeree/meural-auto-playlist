@@ -7,7 +7,7 @@ const { orientation, matches, planPlaylist, collectFeed } = require('../planner'
 const { Auth } = require('../auth');
 const Meural = require('../meural');
 const { writeJSON, readJSON, withLock } = require('../store');
-const { applyPrepared, cleanDevice, validateConfig } = require('../sync');
+const { applyPrepared, cleanDevice, validateConfig, sync } = require('../sync');
 const image = (id, direction = 'portrait', extra = {}) => ({ id, type:'image', orientation:direction, isPublic:true, ...extra });
 const quiet = () => {};
 
@@ -132,16 +132,36 @@ test('apply verifies cap, transfers and selects correct gallery, and retries onl
   const dir=await fs.mkdtemp(path.join(os.tmpdir(),'meural-test-'));t.after(()=>fs.rm(dir,{recursive:true,force:true}));
   const calls=[];let transfer=0;
   const api={galleryAddItem:async()=>calls.push('add'),galleryRemoveItem:async()=>calls.push('remove'),gallerySort:async()=>calls.push('sort'),galleryItems:async()=>[image(2)],
-    deviceAddGallery:async()=>{if(++transfer===1)throw Object.assign(Error('full'),{insufficientStorage:true});calls.push('transfer')},
-    getData:async()=>({galleryIds:[2,9],itemIds:[]}),request:async(method,url)=>calls.push(url),deviceUpdate:async(id,body)=>{assert.equal(id,10);assert.equal(body.currentGallery,2);calls.push('select')},deviceSync:async()=>calls.push('sync')};
+    deviceAddGallery:async(id,gallery)=>{assert.equal(id,10);assert.equal(gallery,2);if(++transfer===1)throw Object.assign(Error('full'),{insufficientStorage:true});calls.push('transfer')},
+    getData:async()=>({galleryIds:[2,9],itemIds:[]}),request:async(method,url)=>calls.push(url),deviceSync:async()=>calls.push('sync')};
   const prepared={userId:1,limit:1,targets:[{target:{},device:{id:10,alias:'frame'},saved:{},direction:'portrait',gallery:{id:2},existing:[image(1)],plan:{desired:[image(2)],add:[image(2)],remove:[image(1)]}}]};
   const state={devices:{}};
   await applyPrepared(api,prepared,state,path.join(dir,'state.json'),{log:quiet});
-  assert.deepEqual(calls,['add','remove','sort','/devices/10/galleries/9','transfer','select','sync']);
+  assert.deepEqual(calls,['add','remove','sort','/devices/10/galleries/9','transfer','sync']);
   assert.ok(state.devices[10].lastSuccess);
 });
 
 test('config rejects invalid caps and shared target names', () => {
   assert.throws(()=>validateConfig({maxImages:101,feedPages:1,devices:[]}),/maxImages/);
   assert.throws(()=>validateConfig({maxImages:100,feedPages:1,devices:[{id:1,orientation:'portrait',playlistName:'same'},{id:2,orientation:'landscape',playlistName:'same'}]}),/unique/);
+});
+
+test('dry run plans both orientations without writing state or calling mutation APIs', async t => {
+  const dir=await fs.mkdtemp(path.join(os.tmpdir(),'meural-test-'));t.after(()=>fs.rm(dir,{recursive:true,force:true}));
+  const config={maxImages:100,feedPages:1,devices:[{id:10,orientation:'portrait',playlistName:'P'},{id:20,orientation:'landscape',playlistName:'L'}]};
+  const api={getData:async()=>({id:7}),devices:async()=>[{id:10,orientation:'vertical'},{id:20,orientation:'horizontal'}],galleries:async()=>[],
+    feedPage:async()=>({isLast:true,data:[{postType:'gallery',post:{id:1,isPublic:true}}]}),galleryItems:async()=>[image(1),image(2,'landscape')]};
+  const file=path.join(dir,'state.json');
+  const result=await sync(api,config,file,{log:quiet});
+  assert.deepEqual(result.targets.map(t=>t.plan.desired.map(x=>x.id)),[[1],[2]]);
+  await assert.rejects(fs.access(file),{code:'ENOENT'});
+  api.feedPage=async()=>({isLast:true,data:[]});
+  await assert.rejects(sync(api,config,file,{apply:true,log:quiet}),/No public portrait/);
+});
+
+test('account identity mismatch stops before device access or writes', async t => {
+  const dir=await fs.mkdtemp(path.join(os.tmpdir(),'meural-test-'));t.after(()=>fs.rm(dir,{recursive:true,force:true}));
+  const file=path.join(dir,'state.json');await writeJSON(file,{userId:7,devices:{}});
+  const config={maxImages:100,feedPages:1,devices:[{id:10,orientation:'portrait',playlistName:'P'}]};
+  await assert.rejects(sync({getData:async()=>({id:8})},config,file,{apply:true,log:quiet}),/another Meural account/);
 });

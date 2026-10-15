@@ -103,7 +103,8 @@ async function applyPrepared(api, prepared, state, stateFile, { cleanupDevice = 
       await cleanDevice(api, t.device, gallery.id, log, t.plan.desired.map(x => x.id));
       await api.deviceAddGallery(t.device.id, gallery.id);
     }
-    await api.deviceUpdate(t.device.id, { currentGallery: gallery.id });
+    // POST /devices/:id/galleries/:id both transfers and selects the gallery.
+    // currentGallery is read-only in the device settings PUT endpoint.
     await api.deviceSync(t.device.id);
     const now = new Date().toISOString();
     record.items = Object.fromEntries(t.plan.desired.map((item, i) => [item.id, record.items[item.id] || { addedAt: new Date(Date.now() - i).toISOString(), featuredAt: item.featuredAt, sourceGalleryId: item.sourceGalleryId }]));
