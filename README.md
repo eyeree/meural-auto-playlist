@@ -23,19 +23,51 @@ No personal API key is required. The observed website flow is:
 5. Meural API calls use `https://api.meural.com/v1`, `Authorization: Token ...`,
    `x-meural-api-version: 4`, and `x-meural-source-platform: web`.
 
-The script imports the existing session instead of implementing password/MFA
-login. Open the signed-in Meural tab in your Chrome CDP instance, then run:
+To sign in or replace an expired/revoked session:
+
+```sh
+node index.js login
+```
+
+This opens NETGEAR's normal login page in a dedicated browser tab. In WSL it
+reuses Chrome on CDP port 9222, or starts Windows Chrome with the same dedicated
+profile as the `cdp-chrome` helper. Complete the password and any MFA steps in
+the browser. The command waits for the redirect to Meural, verifies the new
+refresh token, then saves it privately. It waits for a refresh token different
+from the saved one so an old browser cookie cannot masquerade as renewed login.
+If NETGEAR keeps reusing the existing session, sign out in that login tab and
+sign in again. Existing saved credentials are retained
+if login times out or token verification fails. Login does not change playlists.
+On native Linux/macOS, if no CDP browser exists, agent-browser launches a visible
+Chrome session instead. Install agent-browser and its browser first if needed.
+Use `--cdp PORT` for another existing browser, or `--timeout SECONDS` to change
+the default ten-minute login timeout. Use the same `--data-dir` as your scheduled
+job if you changed the default. An unattended scheduled run never opens a browser.
+
+You can also import an already signed-in Meural tab manually, inspect status,
+or verify the refresh token without opening a browser:
 
 ```sh
 node index.js auth --cdp 9222
+node index.js auth --status
 node index.js auth --refresh
 ```
 
 Tokens are stored in `.meural/auth.json` with mode 0600, inside a mode 0700
 directory. They are git-ignored and never printed. Refreshed tokens are written
 atomically, preserving the previous refresh token if NETGEAR does not rotate it.
-Subsequent runs work without Chrome. If NETGEAR expires or revokes the session,
-the job exits with an error; sign in and import the session again. Refresh tokens
+Subsequent runs work without Chrome. The current access token has a one-hour
+lifetime and is refreshed automatically before expiry or once after an HTTP 401.
+The refresh token is opaque: NETGEAR does not expose its expiry date to this
+script. Do not assume it is permanent or that weekly use extends its lifetime.
+The observed refresh response returns only a new access token; when NETGEAR
+returns a replacement refresh token, the script stores it automatically.
+`auth --status` shows the access-token expiry and recorded import/refresh times,
+without printing credentials. It cannot verify an opaque refresh token offline;
+use `auth --refresh` to check whether NETGEAR still accepts it.
+If NETGEAR expires or revokes the session,
+the job exits with recovery instructions in `.meural/weekly.log`; run `login`
+interactively, then retry `sync --apply`. No cron changes are needed. Refresh tokens
 are account credentials: do not share the `.meural` directory.
 
 ## Configuration and commands

@@ -1,6 +1,7 @@
 const path = require('node:path');
 const { parseArgs } = require('node:util');
 const { Auth, importBrowser } = require('./auth');
+const { login } = require('./browser-login');
 const { readJSON, withLock } = require('./store');
 const Meural = require('./meural');
 const { sync } = require('./sync');
@@ -8,15 +9,17 @@ const { sync } = require('./sync');
 async function main(args = process.argv.slice(2)) {
   const { values, positionals } = parseArgs({ args, allowPositionals: true, options: {
     apply: { type: 'boolean' }, 'dry-run': { type: 'boolean' },
-    'cleanup-device': { type: 'boolean' }, 'refresh': { type: 'boolean' },
+    'cleanup-device': { type: 'boolean' }, 'refresh': { type: 'boolean' }, status: { type: 'boolean' },
     help: { type: 'boolean', short: 'h' }, cdp: { type: 'string', default: '9222' },
     config: { type: 'string', default: path.join(__dirname, 'meural.config.json') },
     'data-dir': { type: 'string', default: path.join(__dirname, '.meural') },
-    'feed-pages': { type: 'string' }
+    'feed-pages': { type: 'string' }, timeout: { type: 'string', default: '600' }
   } });
   const command = positionals[0] || 'sync';
   if (values.help) {
     console.log(`Usage: node index.js <command> [options]
+  login                Open browser sign-in, then save and verify new tokens
+  auth --status        Show access-token expiry (refresh expiry is unknown)
   auth --cdp 9222       Import tokens from the signed-in Meural browser tab
   auth --refresh       Verify token refresh without Chrome
   devices              List devices, orientations, and storage
@@ -25,17 +28,24 @@ async function main(args = process.argv.slice(2)) {
   sync --apply         Apply changes and send playlists to devices
   sync --apply --cleanup-device  Also remove old device content
 Options: --config FILE --data-dir DIR --feed-pages N --dry-run
+Login options: --cdp PORT --timeout SECONDS (default 600)
 Weekly scheduling instructions: README.md`);
     return;
   }
-  if (positionals.length > 1 || !['auth','devices','feeds','sync'].includes(command)) throw new Error('Unknown command. Use --help.');
+  if (positionals.length > 1 || !['login','auth','devices','feeds','sync'].includes(command)) throw new Error('Unknown command. Use --help.');
   if (values.apply && values['dry-run']) throw new Error('Choose either --apply or --dry-run.');
+  if (values.status && values.refresh) throw new Error('Choose either --status or --refresh.');
   const directory = path.resolve(values['data-dir']);
   await withLock(path.join(directory, 'run.lock'), async () => {
     const authFile = path.join(directory, 'auth.json');
     const auth = new Auth(authFile);
+    if (command === 'login') {
+      await login(authFile, { port: values.cdp, timeoutMs: Number(values.timeout) * 1000 });
+      return;
+    }
     if (command === 'auth') {
-      if (values.refresh) { await auth.token(true); console.log('NETGEAR token refresh succeeded; Chrome is not required.'); }
+      if (values.status) console.log(JSON.stringify(await auth.status(), null, 2));
+      else if (values.refresh) { await auth.token(true); console.log('NETGEAR token refresh succeeded; Chrome is not required.'); }
       else { await importBrowser(authFile, values.cdp); console.log('Imported Meural session into the private auth file. Token values were not printed.'); }
       return;
     }

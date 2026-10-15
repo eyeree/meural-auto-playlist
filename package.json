@@ -4,7 +4,8 @@
   "description": "Weekly Meural public-feed playlists with orientation filtering and a 100-image cap",
   "main": "index.js",
   "scripts": {
-    "test": "node test/sync.test.js",
+    "test": "node test/run.js",
+    "login": "node index.js login",
     "sync": "node index.js sync",
     "feeds": "node index.js feeds",
     "auth": "node index.js auth"
