@@ -1,0 +1,8 @@
+{
+  "maxImages": 100,
+  "feedPages": 3,
+  "devices": [
+    { "id": 23139, "orientation": "landscape", "playlistName": "Weekly Feed - Landscape" },
+    { "id": 39518, "orientation": "portrait", "playlistName": "Weekly Feed - Portrait" }
+  ]
+}
