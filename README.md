@@ -1,12 +1,14 @@
 # Meural weekly public-feed playlists
 
-Builds one playlist per configured canvas from the newest public Meural feed
-playlists. Individual image orientation determines which device receives it,
+Builds one playlist per configured canvas from public Meural feed playlists,
+rotating weekly through unseen images, then the least recently shown images.
+Individual image orientation determines which device receives it,
 including images from mixed-orientation source playlists. Videos, private items,
 unknown orientations, and square images are excluded. Each managed playlist has
 at most 100 images after a successful run.
 
 Requires Node.js 22 or later. There are no npm runtime dependencies.
+Linux/WSL also uses `flock` from the standard `util-linux` package for locking.
 
 ## Authentication
 
@@ -81,16 +83,23 @@ npm test
 ```
 
 `--config FILE`, `--data-dir DIR`, and `--feed-pages N` override the defaults.
-The configured feed-page limit defaults to up to three pages of 100 entries.
-Increase it if older catalog content needs to be considered. Sources in the
-scanned pages are sorted by `featuredAt`, newest first. The sync fetches images
-until it has enough for both orientations, deduplicates IDs, and keeps the newest
-100 matching public feed images. If fewer than 100 are available, matching
-existing managed images fill the remaining space, newest additions first.
-An artwork's original creation date is never used to measure playlist age.
+The configured feed-page limit defaults to up to 100 pages of 100 entries.
+The scan stops at the end of the feed and reads the full pool within that limit,
+using at most four concurrent playlist requests. It deduplicates image IDs and
+filters prices: sampler images, images with zero nonsubscriber price, and images
+with zero subscriber price when the account reports an active membership are
+eligible. Missing/unknown prices and items requiring an additional payment are
+excluded. Public visibility by itself does not establish eligibility. The script
+does not purchase artwork.
 
-Weekly checks add newly featured images and evict older ones; they do not
-randomize the collection when Meural has not published new feed content.
+Each Sunday at 9 AM Pacific begins a new selection period. The script prefers
+images never used on that device, breaking ties by newest feed feature date.
+When fewer than 100 unseen images remain, it fills the rest with images shown
+least recently. Repeats are unavoidable if the eligible pool is smaller than 100.
+The same selection is kept throughout the week, including manual reruns. History
+for removed images stays in `.meural/state.json`, so old images are not mistaken
+for unseen ones. The first run migrates the existing playlists into that history.
+History measures successful playlist sends, not individual on-screen playbacks.
 
 The first applied run creates private, account-owned playlists. Their IDs and
 item addition timestamps are saved in `.meural/state.json`. Later runs update
@@ -98,7 +107,8 @@ those playlists even if a device is currently showing a different one. Catalog
 source playlists are never edited. Missing saved playlists, account changes,
 orientation changes, or empty matching feed results stop the sync for review.
 
-Writes are resumable: additions happen before removals, with pruning after each
+Writes are resumable: the intended selection is saved before artwork changes,
+so a failed run retries the same batch. Additions happen before removals, with pruning after each
 successful addition, verification before device transfer, and state checkpoints.
 A cloud list may briefly contain one extra item during an update. Timed-out
 playlist writes are checked against server state before declaring failure;
@@ -120,21 +130,31 @@ asynchronous; an offline device or slow reclamation can require a later retry.
 node install-weekly.js
 ```
 
-Installs an idempotent user cron entry for **Sunday at 9 AM Pacific**, preserving
-other cron jobs. It verifies the system timezone is `America/Los_Angeles`, so
-daylight-saving changes are handled by the local cron daemon. The entry uses an
-absolute Node executable and script path, avoiding cron/NVM PATH problems. It
-runs `sync --apply` and appends output to `.meural/weekly.log`.
+Installs idempotent user cron entries for startup and the top of every hour,
+replacing the old Sunday-only entry and preserving other cron jobs. Each check
+runs `sync --apply --scheduled`, which computes the latest **Sunday at 9 AM
+Pacific** and updates only devices that have not succeeded since then. Already
+completed devices are skipped, including when another device needs a retry.
+Several missed weeks produce one catch-up update, rather than replaying old weeks.
+Pacific daylight-saving changes are handled explicitly. The installer verifies
+the system timezone and uses absolute Node/script paths to avoid cron/NVM PATH
+problems. Timestamped output is appended to `.meural/weekly.log`.
 
-The WSL distribution and cron daemon must be running at the scheduled time; cron
-does not catch up missed runs. After moving the repository or upgrading/removing
-the pinned Node installation, run the installer again. To remove the schedule,
-use `crontab -e` and remove the line ending in `# meural-weekly-feed`.
+When WSL is off at the scheduled time, the startup check catches up when cron
+starts again. The hourly check also handles resume from sleep and retries after
+network or API failures. WSL and its cron daemon still need to run eventually;
+these entries do not wake Windows or start a stopped WSL distribution themselves.
+After moving the repository or upgrading/removing the pinned Node installation,
+run the installer again. To remove the schedule, use `crontab -e` and remove both
+lines ending in `# meural-weekly-feed`.
 
 Runs take an exclusive `.meural/run.lock` to prevent overlapping writes and
-token refresh races. A hard-killed process can leave this lock behind; remove it
-only after confirming there is no running job. Keep `.meural/state.json` between
-runs. `MEURAL_DEBUG=1` logs endpoint paths without credentials for diagnostics.
+token refresh races. On Linux/WSL this is an OS lock, automatically released on
+process exit, forced termination, or shutdown; the file itself stays in place and
+must not be deleted while a job runs. Scheduled checks skip cleanly when another
+run holds the lock. Other platforms use the original exclusive PID file, which
+can require manual cleanup after a forced termination. Keep `.meural/state.json`
+between runs. `MEURAL_DEBUG=1` logs endpoint paths without credentials for diagnostics.
 
 ## API references
 

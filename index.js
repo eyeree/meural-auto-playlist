@@ -9,6 +9,7 @@ const { sync } = require('./sync');
 async function main(args = process.argv.slice(2)) {
   const { values, positionals } = parseArgs({ args, allowPositionals: true, options: {
     apply: { type: 'boolean' }, 'dry-run': { type: 'boolean' },
+    scheduled: { type: 'boolean' },
     'cleanup-device': { type: 'boolean' }, 'refresh': { type: 'boolean' }, status: { type: 'boolean' },
     help: { type: 'boolean', short: 'h' }, username: { type: 'string' },
     config: { type: 'string', default: path.join(__dirname, 'meural.config.json') },
@@ -25,6 +26,7 @@ async function main(args = process.argv.slice(2)) {
   feeds                List public feed playlists (metadata only)
   sync                 Preview changes; default is a dry run
   sync --apply         Apply changes and send playlists to devices
+  sync --apply --scheduled  Apply only the latest weekly update if still due
   sync --apply --cleanup-device  Also remove old device content
 Options: --config FILE --data-dir DIR --feed-pages N --dry-run
 Login options: --username EMAIL --env-file FILE
@@ -35,6 +37,7 @@ Weekly scheduling instructions: README.md`);
   if (positionals.length > 1 || !['login','auth','devices','feeds','sync'].includes(command)) throw new Error('Unknown command. Use --help.');
   if (values.apply && values['dry-run']) throw new Error('Choose either --apply or --dry-run.');
   if (values.status && values.refresh) throw new Error('Choose either --status or --refresh.');
+  if (values.scheduled && (command !== 'sync' || !values.apply)) throw new Error('--scheduled requires sync --apply.');
   const directory = path.resolve(values['data-dir']);
   await withLock(path.join(directory, 'run.lock'), async () => {
     const authFile = path.join(directory, 'auth.json');
@@ -71,12 +74,16 @@ Weekly scheduling instructions: README.md`);
       return;
     }
     await sync(api, config, path.join(directory, 'state.json'), {
-      apply: !!values.apply, cleanupDevice: !!values['cleanup-device']
+      apply: !!values.apply, cleanupDevice: !!values['cleanup-device'], scheduled: !!values.scheduled,
+      ...(values.scheduled ? { log: message => console.log(`[${new Date().toISOString()}] ${message}`) } : {})
     });
+  }).catch(error => {
+    if (!values.scheduled || error.code !== 'ELOCKED') throw error;
+    console.log(`[${new Date().toISOString()}] Scheduled check skipped: ${error.message}`);
   });
 }
 
 if (require.main === module) main().catch(error => {
-  console.error(error.message); process.exitCode = 1;
+  console.error(`[${new Date().toISOString()}] ${error.message}`); process.exitCode = 1;
 });
 module.exports = { main };

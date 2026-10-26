@@ -8,7 +8,7 @@ const { Auth } = require('../auth');
 const Meural = require('../meural');
 const { writeJSON, readJSON, withLock } = require('../store');
 const { applyPrepared, cleanDevice, validateConfig, sync } = require('../sync');
-const image = (id, direction = 'portrait', extra = {}) => ({ id, type:'image', orientation:direction, isPublic:true, ...extra });
+const image = (id, direction = 'portrait', extra = {}) => ({ id, type:'image', orientation:direction, isPublic:true, nonsubscriberPrice:0, subscriberPrice:0, ...extra });
 const quiet = () => {};
 
 test('device orientation aliases and per-image orientation in mixed galleries', () => {
@@ -21,21 +21,22 @@ test('device orientation aliases and per-image orientation in mixed galleries', 
   assert.equal(matches(image(1,'portrait',{type:'video'}), 'portrait'), false);
 });
 
-test('100-image cap, duplicate removal, public filtering and deterministic repeat run', () => {
+test('100-image cap, duplicate removal, public filtering and unseen images preferred next time', () => {
   const candidates = Array.from({length:120},(_,i)=>image(i+1));
   const first = planPlaylist([], [image(999,'portrait',{isPublic:false}), ...candidates, candidates[0]], 'portrait');
   assert.equal(first.desired.length, 100);
   assert.deepEqual(first.desired.map(x=>x.id), candidates.slice(0,100).map(x=>x.id));
   const second = planPlaylist(first.desired, candidates, 'portrait');
-  assert.equal(second.add.length,0); assert.equal(second.remove.length,0);
+  assert.equal(second.add.length,20); assert.equal(second.remove.length,20);
+  assert.deepEqual(second.desired.slice(0,20).map(x=>x.id), candidates.slice(100).map(x=>x.id));
 });
 
-test('new feed images evict oldest entries, using recorded playlist age rather than artwork creation', () => {
+test('unseen images come first, followed by least recently shown images', () => {
   const current = [image(1),image(2),image(3)];
   const history = {1:{addedAt:'2026-01-01'},2:{addedAt:'2026-02-01'},3:{addedAt:'2026-03-01'}};
   const plan = planPlaylist(current,[image(4)],'portrait',history,3);
-  assert.deepEqual(plan.desired.map(x=>x.id),[4,3,2]);
-  assert.deepEqual(plan.remove.map(x=>x.id),[1]);
+  assert.deepEqual(plan.desired.map(x=>x.id),[4,1,2]);
+  assert.deepEqual(plan.remove.map(x=>x.id),[3]);
 });
 
 test('feed sorts feature dates and includes mixed-gallery images while excluding articles/private galleries', async () => {
@@ -46,7 +47,7 @@ test('feed sorts feature dates and includes mixed-gallery images while excluding
     {postType:'gallery',post:{id:3,isPublic:false}},
     {postType:'gallery',post:{id:4,isPublic:true,orientation:'mixed',featuredAt:'2026-01-01'}}
   ]}),galleryItems:async id=>{calls.push(id);return [image(id),image(id+10,'landscape')]}};
-  const feed=await collectFeed(api,1,100);
+  const feed=await collectFeed(api,1);
   assert.deepEqual(calls,[4,1]);
   assert.deepEqual(feed.candidates.map(x=>x.id),[4,14,1,11]);
 });
@@ -84,7 +85,7 @@ test('exclusive run lock prevents overlap and releases after failure', async t =
   const dir=await fs.mkdtemp(path.join(os.tmpdir(),'meural-test-'));t.after(()=>fs.rm(dir,{recursive:true,force:true}));
   const file=path.join(dir,'lock');
   await assert.rejects(withLock(file,async()=>{
-    await assert.rejects(withLock(file,async()=>{}),/Another run/);throw Error('failure');
+    await assert.rejects(withLock(file,async()=>{}), error => error.code === 'ELOCKED' && /Another run/.test(error.message));throw Error('failure');
   }),/failure/);
   await withLock(file,async()=>{});
 });

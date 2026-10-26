@@ -1,5 +1,6 @@
 const { readJSON, writeJSON } = require('./store');
-const { orientation, matches: imageMatches, planPlaylist, collectFeed } = require('./planner');
+const { orientation, matches: imageMatches, availableWithoutPurchase, planDesired, planPlaylist, collectFeed } = require('./planner');
+const { latestWeeklyRun, needsWeeklyRun } = require('./schedule');
 
 function validateConfig(config) {
   if (!Number.isInteger(config.maxImages) || config.maxImages < 1 || config.maxImages > 100) throw new Error('maxImages must be between 1 and 100.');
@@ -13,7 +14,7 @@ function validateConfig(config) {
   }
 }
 
-async function prepare(api, config, state, log) {
+async function prepare(api, config, state, log, { week = latestWeeklyRun() } = {}) {
   validateConfig(config);
   const user = await api.getData('/user');
   if (!user?.id) throw new Error('Missing account ID.');
@@ -31,13 +32,33 @@ async function prepare(api, config, state, log) {
     if (saved.galleryId && matches.length !== 1) throw new Error(`Managed playlist ${saved.galleryId} is missing or no longer owned. Check saved state.`);
     const gallery = matches[0];
     const existing = gallery ? await api.galleryItems(gallery.id) : [];
-    targets.push({ target, device, saved, gallery, existing, direction });
+    const history = { ...saved.history };
+    // Migrate current selections before rotating, preserving older history forever.
+    for (const item of existing) if (!history[item.id]) history[item.id] = {
+      lastShownAt: saved.lastSuccess || saved.items?.[item.id]?.addedAt || new Date().toISOString()
+    };
+    targets.push({ target, device, saved, gallery, existing, direction, history, week });
   }
   if (new Set(targets.filter(t=>t.gallery).map(t=>String(t.gallery.id))).size !== targets.filter(t=>t.gallery).length) throw new Error('Devices must use different managed playlists.');
-  const feed = await collectFeed(api, config.feedPages, config.maxImages, log);
+  const eligible = item => availableWithoutPurchase(item, user.subscriptionIsActive === true);
+  const feed = await collectFeed(api, config.feedPages, log, { eligible });
+  const catalog = new Map(feed.candidates.map(item => [String(item.id), item]));
   for (const t of targets) {
-    t.plan = planPlaylist(t.existing, feed.candidates, t.direction, t.saved.items, config.maxImages);
-    if (!feed.candidates.some(x => x.isPublic && imageMatches(x, t.direction))) throw new Error(`No public ${t.direction} feed images found; refusing to clear a playlist.`);
+    const pinned = t.saved.pending?.itemIds || (t.saved.rotationWeek === week ? t.saved.selection || Object.keys(t.saved.items || {}) : null);
+    if (pinned?.length) {
+      const known = new Map(t.existing.map(item => [String(item.id), item]));
+      for (const [id, item] of catalog) known.set(id, item);
+      const desired = pinned.map(id => known.get(String(id)));
+      if (desired.length > config.maxImages || desired.some(item => !item || !eligible(item) || !imageMatches(item, t.direction))) {
+        throw new Error(`${t.device.alias}: the saved weekly selection is unavailable or no longer included at zero price. Review its pending selection/configuration before retrying.`);
+      }
+      t.plan = planDesired(t.existing, desired);
+    } else {
+      t.plan = planPlaylist(t.existing.filter(eligible), feed.candidates, t.direction, t.history, config.maxImages);
+      // Include ineligible existing images in removals too.
+      t.plan = planDesired(t.existing, t.plan.desired);
+    }
+    if (!t.plan.desired.length || !feed.candidates.some(x => imageMatches(x, t.direction))) throw new Error(`No public ${t.direction} feed images available at zero price; refusing to clear a playlist.`);
     log(`${t.device.alias} (${t.direction}): ${t.gallery ? `playlist ${t.gallery.id}` : `create "${t.target.playlistName}"`}; add ${t.plan.add.length}, remove ${t.plan.remove.length}, final ${t.plan.desired.length}/${config.maxImages}.`);
   }
   return { targets, feed, userId: user.id, limit: config.maxImages };
@@ -71,6 +92,8 @@ async function applyPrepared(api, prepared, state, stateFile, { cleanupDevice = 
     record.galleryId = gallery.id;
     record.alias = t.device.alias;
     record.orientation = t.direction;
+    record.history = t.history || record.history || {};
+    record.pending = { week: t.week || latestWeeklyRun(), itemIds: t.plan.desired.map(item => item.id) };
     await writeJSON(stateFile, state);
     let cleaned = false;
     if (cleanupDevice || (Number.isFinite(t.device.freeSpace) && t.device.freeSpace < 500)) {
@@ -109,6 +132,10 @@ async function applyPrepared(api, prepared, state, stateFile, { cleanupDevice = 
     const now = new Date().toISOString();
     record.items = Object.fromEntries(t.plan.desired.map((item, i) => [item.id, record.items[item.id] || { addedAt: new Date(Date.now() - i).toISOString(), featuredAt: item.featuredAt, sourceGalleryId: item.sourceGalleryId }]));
     record.lastSuccess = now;
+    record.rotationWeek = record.pending.week;
+    record.selection = t.plan.desired.map(item => item.id);
+    for (const item of t.plan.desired) record.history[item.id] = { ...record.history[item.id], lastShownAt: now };
+    delete record.pending;
     await writeJSON(stateFile, state);
     log(`${t.device.alias}: verified ${actual.length} images; playlist ${gallery.id} sent to device.`);
   }
@@ -117,7 +144,15 @@ async function applyPrepared(api, prepared, state, stateFile, { cleanupDevice = 
 async function sync(api, config, stateFile, options = {}) {
   const state = await readJSON(stateFile, { version: 1, devices: {} });
   const log = options.log || console.log;
-  const prepared = await prepare(api, config, state, log);
+  validateConfig(config);
+  const week = latestWeeklyRun(options.now || new Date());
+  if (options.scheduled) {
+    const devices = config.devices.filter(target => state.devices?.[target.id]?.pending || needsWeeklyRun(state.devices?.[target.id], week));
+    if (!devices.length) { log(`Weekly selection already completed for ${week}; no update needed.`); return { skipped: true }; }
+    config = { ...config, devices };
+    log(`Weekly update due for ${week}: ${devices.length} device(s).`);
+  }
+  const prepared = await prepare(api, config, state, log, { week });
   for (const t of prepared.targets) {
     if (options.cleanupDevice || (Number.isFinite(t.device.freeSpace) && t.device.freeSpace < 500)) {
       log(`${t.device.alias}: device-only storage cleanup planned; ${t.device.galleryIds?.length || 0} attached playlists, ${t.device.itemIds?.length || 0} individually added images will be considered.`);
