@@ -45,11 +45,17 @@ class Auth {
       refreshTokenReplacedAt: saved.refreshTokenReplacedAt || null };
   }
   async token(forceRefresh = false) {
+    if (this.refreshing) return this.refreshing;
     let saved = await this.load();
+    if (this.refreshing) return this.refreshing;
     if (!forceRefresh && saved.accessToken && saved.expiresAt > Date.now() + 60000) return saved.accessToken;
-    saved = await refreshSession(saved, this.fetch);
-    await writeJSON(this.file, saved);
-    return saved.accessToken;
+    this.refreshing = (async () => {
+      saved = await refreshSession(saved, this.fetch);
+      await writeJSON(this.file, saved);
+      return saved.accessToken;
+    })();
+    try { return await this.refreshing; }
+    finally { this.refreshing = null; }
   }
 }
 module.exports = { Auth, expiresAt, refreshSession, CLIENT_ID };

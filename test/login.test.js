@@ -219,3 +219,22 @@ test('access refresh retains an unrotated refresh token and metadata', async () 
   assert.equal(refreshed.refreshTokenReplacedAt, undefined);
   assert.ok(refreshed.lastRefreshedAt);
 });
+
+test('concurrent catalog requests share a refresh and recover after a failed refresh', async t => {
+  const { file } = await fixture(t);
+  let requests = 0, fail = true;
+  const auth = new Auth(file, async () => {
+    requests++;
+    await new Promise(resolve => setTimeout(resolve, 15));
+    if (fail) return { ok: false, status: 503 };
+    return { ok: true, json: async () => ({ data: { accessToken: 'shared-access' } }) };
+  });
+  const failed = await Promise.allSettled(Array.from({ length: 4 }, () => auth.token(true)));
+  assert.ok(failed.every(result => result.status === 'rejected'));
+  assert.equal(requests, 1);
+  fail = false;
+  const tokens = await Promise.all(Array.from({ length: 4 }, () => auth.token(true)));
+  assert.deepEqual(tokens, Array(4).fill('shared-access'));
+  assert.equal(requests, 2);
+  assert.equal((await readJSON(file)).accessToken, 'shared-access');
+});
